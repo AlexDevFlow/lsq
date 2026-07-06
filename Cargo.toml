@@ -1,0 +1,49 @@
+[package]
+name = "lsq"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line client for LocalSend"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["localsend", "file-transfer", "cli", "lan"]
+categories = ["command-line-utilities", "network-programming"]
+
+[lib]
+name = "lsq"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lsq"
+path = "src/bin/lsq.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+rustls = "0.23"
+rcgen = "0.13"
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+socket2 = { version = "0.5", features = ["all"] }
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "1"
+futures-util = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+mime_guess = "2"
+hostname = "0.4"
+comfy-table = "7"
+x509-parser = "0.16"
+bytes = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true

@@ -1,0 +1,4 @@
+target/
+vendor/
+.git/
+docs/
