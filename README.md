@@ -107,16 +107,28 @@ shared link the browser shows a PIN form; `lsq pull` takes `--pin`.
 
 ## What works and what doesn't
 
-It implements LocalSend protocol v2.1: multicast discovery, the upload API in
+It implements LocalSend protocol v2.2: multicast discovery, the upload API in
 both directions, the download API (`share`/`pull`, including the browser
-page), PIN, and cancel. I've run the upload path against the desktop app
-(v1.17.0) both ways, with single and multiple files and with a PIN set, and
-files come across intact.
+page), PIN, cancel, and the 422 answer to a checksum mismatch that 2.2 adds.
+
+Checked against the LocalSend 1.18.2 core in both directions — lsq sending to
+a real receiver in its normal (non-browser) receive mode, and a real client
+sending to `lsq receive` — plus the discovery handshake, with the files
+arriving byte-identical.
+
+Note for anyone reading about "protocol v3": LocalSend 1.18.2 ships a `v3`
+namespace, but only `POST /api/localsend/v3/nonce` and
+`POST /api/localsend/v3/register` are routed, the register handler is a stub
+marked *not wired up yet*, and the app builds its own HTTP client with the v2
+version pinned. Devices still announce `2.2` and still transfer over the v2
+endpoints, so there is nothing live to talk to on v3 yet.
 
 Still missing:
 
 - IPv6
-- anything newer than protocol v2.1
+- protocol v3: the nonce/signed-token handshake, pairing, and the WebRTC
+  transport. Dormant in the app as of 1.18.2; worth revisiting when the app
+  starts using it.
 
 ## Tests
 

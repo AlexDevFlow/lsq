@@ -58,8 +58,11 @@ pub async fn pull_files(
     pin: Option<&str>,
     max_bytes: Option<u64>,
     quiet: bool,
+    identity: Option<&crate::certs::Identity>,
 ) -> std::result::Result<PullOutcome, PullError> {
-    let client = crate::sender::insecure_client().map_err(PullError::rejected)?;
+    // Presents our certificate like the official client does on every
+    // request; a peer that requires one would otherwise refuse the handshake.
+    let client = crate::sender::client_with_identity(identity).map_err(PullError::rejected)?;
     let base = base.trim_end_matches('/');
 
     // 1. prepare-download

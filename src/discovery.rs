@@ -287,10 +287,18 @@ async fn spawn_register_endpoint(
 }
 
 /// Active discovery: announce, listen for replies for `wait`, return peers.
-pub async fn discover(me: &SelfDevice, wait: Duration) -> Result<Vec<Peer>> {
+pub async fn discover(
+    me: &SelfDevice,
+    wait: Duration,
+    identity: Option<&crate::certs::Identity>,
+) -> Result<Vec<Peer>> {
     let sock = Arc::new(bind_multicast_socket(MULTICAST_PORT)?);
     let peers: PeerMap = Arc::new(Mutex::new(HashMap::new()));
-    let http = crate::sender::insecure_client()?;
+    // The reply below is an HTTPS request to the peer. LocalSend 1.18+ makes
+    // the client certificate mandatory whenever it is not serving its web
+    // pages, so a certless client is dropped with a `CertificateRequired`
+    // TLS alert and the peer never learns we exist.
+    let http = crate::sender::client_with_identity(identity)?;
 
     // Announce the ephemeral register port (plain http) so TCP replies
     // reach us and not some other process on the default port.
