@@ -1,6 +1,8 @@
 //! Loopback integration tests for the Download API (spec §5): a real HTTP
 //! share server driven by real clients, plus the pull module against it.
 
+mod common;
+
 use lsq::discovery::SelfDevice;
 use lsq::proto::*;
 use lsq::share::{ShareState, SharedFile};
@@ -10,6 +12,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 struct ShareServer {
+    state: Arc<ShareState>,
     addr: SocketAddr,
     #[allow(dead_code)]
     src: TempDir,
@@ -65,7 +68,7 @@ async fn start_share(files: &[(&str, &[u8])], pin: Option<&str>) -> ShareServer 
         peers: Default::default(),
         events: tx,
     });
-    let app = lsq::share::router(state)
+    let app = lsq::share::router(state.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
     let h2 = handle.clone();
@@ -77,7 +80,7 @@ async fn start_share(files: &[(&str, &[u8])], pin: Option<&str>) -> ShareServer 
             .unwrap();
     });
     let addr = handle.listening().await.unwrap();
-    ShareServer { addr, src, handle }
+    ShareServer { addr, src, state, handle }
 }
 
 fn base(s: &ShareServer) -> String {
@@ -221,12 +224,13 @@ async fn session_is_bound_to_ip() {
         .unwrap();
     let prep: PrepareDownloadResponse = resp.json().await.unwrap();
 
-    // download from another loopback IP with a stolen session id
-    let c2 = client_from("127.0.0.2");
+    // Download as a different peer with a stolen session id.
+    let other = common::OtherPeer::start(lsq::share::router(s.state.clone())).await;
+    let c2 = client();
     let r = c2
         .get(format!(
             "{}{API_BASE}/download?sessionId={}&fileId=f0",
-            base(&s),
+            other.base,
             prep.session_id
         ))
         .send()

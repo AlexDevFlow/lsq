@@ -104,10 +104,28 @@ async fn start_mtls_server() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    let app = axum::Router::new().route(
-        "/api/localsend/v2/register",
-        axum::routing::post(|| async { "{}" }),
-    );
+    let app = axum::Router::new()
+        .route(
+            "/api/localsend/v2/register",
+            axum::routing::post(|| async { "{}" }),
+        )
+        .route(
+            "/api/localsend/v2/prepare-download",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "info": { "alias": "mtls-peer" },
+                    "sessionId": "test-session",
+                    "files": {
+                        "f": { "id": "f", "fileName": "hello.txt", "size": 5,
+                               "fileType": "text/plain" }
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/api/localsend/v2/download",
+            axum::routing::get(|| async { "hello" }),
+        );
     let tls = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config));
     tokio::spawn(async move {
         let _ = axum_server::from_tcp_rustls(listener, tls)
@@ -143,5 +161,27 @@ async fn client_with_identity_reaches_an_mtls_peer() {
         "lsq's identity client must reach a peer that requires a client \
          certificate: {:?}",
         res.err()
+    );
+}
+
+#[tokio::test]
+async fn pull_presents_identity_to_an_mtls_peer() {
+    let port = start_mtls_server().await;
+    let base = format!("https://127.0.0.1:{port}");
+    let dest = tempfile::tempdir().unwrap();
+    let id = lsq::certs::generate_identity("").unwrap();
+
+    let error = lsq::pull::pull_files(&base, dest.path(), None, None, true, None)
+        .await
+        .unwrap_err();
+    assert!(error.unreachable);
+    let outcome = lsq::pull::pull_files(&base, dest.path(), None, None, true, Some(&id))
+        .await
+        .unwrap();
+    assert_eq!(outcome.fetched, 1);
+    assert_eq!(outcome.total_bytes, 5);
+    assert_eq!(
+        std::fs::read(dest.path().join("hello.txt")).unwrap(),
+        b"hello"
     );
 }
