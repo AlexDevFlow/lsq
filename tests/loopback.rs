@@ -1,5 +1,7 @@
 //! Loopback integration tests: a real HTTPS receiver driven by real clients.
 
+mod common;
+
 use lsq::certs;
 use lsq::discovery::SelfDevice;
 use lsq::proto::*;
@@ -279,13 +281,15 @@ async fn sha256_verified_when_provided() {
         .json(&req).send().await.unwrap();
     let sess: PrepareUploadResponse = resp.json().await.unwrap();
     assert_eq!(do_upload(&c, &s, &sess, "f", b"payload").await, 200);
-    // wrong hash rejected, file absent, no partials
+    // Wrong hash rejected with 422 (protocol 2.2), file absent, no partials.
+    // 422 and not 500: the transfer is the sender's to retry, and the
+    // official server answers a checksum mismatch the same way.
     let mut req = prepare_req(&[("g", "bad.txt", b"payload")]);
     req.files.get_mut("g").unwrap().sha256 = Some("00".repeat(32));
     let resp = c.post(format!("{}{API_BASE}/prepare-upload", base(&s)))
         .json(&req).send().await.unwrap();
     let sess: PrepareUploadResponse = resp.json().await.unwrap();
-    assert_eq!(do_upload(&c, &s, &sess, "g", b"payload").await, 500);
+    assert_eq!(do_upload(&c, &s, &sess, "g", b"payload").await, 422);
     assert!(!dest_file(&s, "bad.txt").exists());
     assert!(no_part_files(s.dest.path()));
 }
@@ -467,11 +471,11 @@ async fn upload_from_different_ip_is_403() {
         .send().await.unwrap();
     let sess: PrepareUploadResponse = resp.json().await.unwrap();
 
-    // same session, different source IP (127.0.0.2 is loopback on Linux)
-    let c2 = client_from("127.0.0.2");
+    let other = common::OtherPeer::start(lsq::receiver::router(s.state.clone())).await;
+    let c2 = client();
     let r = c2.post(format!(
         "{}{API_BASE}/upload?sessionId={}&fileId=f&token={}",
-        base(&s), sess.session_id, sess.files["f"]
+        other.base, sess.session_id, sess.files["f"]
     )).body("x").send().await.unwrap();
     assert_eq!(r.status(), 403);
     let b: serde_json::Value = r.json().await.unwrap();
@@ -597,9 +601,10 @@ async fn cancel_from_other_ip_is_ignored() {
         .send().await.unwrap();
     let sess: PrepareUploadResponse = resp.json().await.unwrap();
 
-    let c2 = client_from("127.0.0.2");
+    let other = common::OtherPeer::start(lsq::receiver::router(s.state.clone())).await;
+    let c2 = client();
     let _ = c2.post(format!(
-        "{}{API_BASE}/cancel?sessionId={}", base(&s), sess.session_id
+        "{}{API_BASE}/cancel?sessionId={}", other.base, sess.session_id
     )).send().await.unwrap();
     // session still alive for the legitimate sender
     let r = c1.post(format!(
@@ -672,7 +677,7 @@ async fn register_returns_own_info_and_records_peer() {
     assert_eq!(r.status(), 200);
     let body: RegisterResponse = r.json().await.unwrap();
     assert_eq!(body.alias, "test-receiver");
-    assert_eq!(body.version, "2.1");
+    assert_eq!(body.version, PROTOCOL_VERSION);
     assert!(!body.fingerprint.is_empty());
 }
 

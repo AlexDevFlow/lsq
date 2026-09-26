@@ -1,6 +1,8 @@
 //! Loopback integration tests for the Download API (spec §5): a real HTTP
 //! share server driven by real clients, plus the pull module against it.
 
+mod common;
+
 use lsq::discovery::SelfDevice;
 use lsq::proto::*;
 use lsq::share::{ShareState, SharedFile};
@@ -10,6 +12,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 struct ShareServer {
+    state: Arc<ShareState>,
     addr: SocketAddr,
     #[allow(dead_code)]
     src: TempDir,
@@ -65,7 +68,7 @@ async fn start_share(files: &[(&str, &[u8])], pin: Option<&str>) -> ShareServer 
         peers: Default::default(),
         events: tx,
     });
-    let app = lsq::share::router(state)
+    let app = lsq::share::router(state.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
     let h2 = handle.clone();
@@ -77,7 +80,7 @@ async fn start_share(files: &[(&str, &[u8])], pin: Option<&str>) -> ShareServer 
             .unwrap();
     });
     let addr = handle.listening().await.unwrap();
-    ShareServer { addr, src, handle }
+    ShareServer { addr, src, state, handle }
 }
 
 fn base(s: &ShareServer) -> String {
@@ -221,12 +224,13 @@ async fn session_is_bound_to_ip() {
         .unwrap();
     let prep: PrepareDownloadResponse = resp.json().await.unwrap();
 
-    // download from another loopback IP with a stolen session id
-    let c2 = client_from("127.0.0.2");
+    // Download as a different peer with a stolen session id.
+    let other = common::OtherPeer::start(lsq::share::router(s.state.clone())).await;
+    let c2 = client();
     let r = c2
         .get(format!(
             "{}{API_BASE}/download?sessionId={}&fileId=f0",
-            base(&s),
+            other.base,
             prep.session_id
         ))
         .send()
@@ -338,7 +342,7 @@ async fn pull_module_end_to_end() {
     let b = b"second file".to_vec();
     let s = start_share(&[("data.bin", &a), ("note.txt", &b)], None).await;
     let dest = TempDir::new().unwrap();
-    let outcome = lsq::pull::pull_files(&base(&s), dest.path(), None, None, true)
+    let outcome = lsq::pull::pull_files(&base(&s), dest.path(), None, None, true, None)
         .await
         .unwrap();
     assert_eq!(outcome.fetched, 2);
@@ -354,12 +358,12 @@ async fn pull_module_end_to_end() {
 async fn pull_uses_pin_and_reports_wrong_pin() {
     let s = start_share(&[("a.txt", b"x")], Some("9999")).await;
     let dest = TempDir::new().unwrap();
-    let err = lsq::pull::pull_files(&base(&s), dest.path(), None, None, true)
+    let err = lsq::pull::pull_files(&base(&s), dest.path(), None, None, true, None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("PIN"));
     assert!(!err.unreachable);
-    let outcome = lsq::pull::pull_files(&base(&s), dest.path(), Some("9999"), None, true)
+    let outcome = lsq::pull::pull_files(&base(&s), dest.path(), Some("9999"), None, true, None)
         .await
         .unwrap();
     assert_eq!(outcome.fetched, 1);
@@ -370,7 +374,7 @@ async fn pull_never_overwrites_existing_files() {
     let s = start_share(&[("keep.txt", b"new")], None).await;
     let dest = TempDir::new().unwrap();
     std::fs::write(dest.path().join("keep.txt"), b"original").unwrap();
-    lsq::pull::pull_files(&base(&s), dest.path(), None, None, true)
+    lsq::pull::pull_files(&base(&s), dest.path(), None, None, true, None)
         .await
         .unwrap();
     assert_eq!(std::fs::read(dest.path().join("keep.txt")).unwrap(), b"original");
@@ -381,7 +385,7 @@ async fn pull_never_overwrites_existing_files() {
 async fn pull_sanitizes_hostile_names() {
     let s = start_share(&[("../../../tmp/lsq-pull-escape.txt", b"x")], None).await;
     let dest = TempDir::new().unwrap();
-    lsq::pull::pull_files(&base(&s), dest.path(), None, None, true)
+    lsq::pull::pull_files(&base(&s), dest.path(), None, None, true, None)
         .await
         .unwrap();
     assert!(!std::path::Path::new("/tmp/lsq-pull-escape.txt").exists());
@@ -392,7 +396,7 @@ async fn pull_sanitizes_hostile_names() {
 async fn pull_respects_max_size() {
     let s = start_share(&[("big.bin", &vec![0u8; 5000])], None).await;
     let dest = TempDir::new().unwrap();
-    let err = lsq::pull::pull_files(&base(&s), dest.path(), None, Some(1024), true)
+    let err = lsq::pull::pull_files(&base(&s), dest.path(), None, Some(1024), true, None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("max-size"));
@@ -404,7 +408,7 @@ async fn pull_marks_dead_peer_unreachable() {
     // unroutable TEST-NET address → connect timeout flagged as unreachable
     let dest = TempDir::new().unwrap();
     let start = std::time::Instant::now();
-    let err = lsq::pull::pull_files("http://192.0.2.1:53317", dest.path(), None, None, true)
+    let err = lsq::pull::pull_files("http://192.0.2.1:53317", dest.path(), None, None, true, None)
         .await
         .unwrap_err();
     assert!(err.unreachable);
@@ -438,7 +442,7 @@ async fn pull_rejects_oversized_body_from_lying_server() {
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     let dest = TempDir::new().unwrap();
-    let err = lsq::pull::pull_files(&format!("http://{addr}"), dest.path(), None, None, true)
+    let err = lsq::pull::pull_files(&format!("http://{addr}"), dest.path(), None, None, true, None)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("exceeds declared size"));

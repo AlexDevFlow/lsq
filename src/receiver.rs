@@ -451,6 +451,11 @@ async fn upload(
         Ok(pair) => pair,
         Err(e) => {
             let _ = state.events.send(format!("upload failed: {e}"));
+            // Protocol 2.2: a checksum mismatch is the sender's problem to
+            // retry, not a receiver fault, and has its own status code.
+            if e.downcast_ref::<ChecksumMismatch>().is_some() {
+                return err(StatusCode::UNPROCESSABLE_ENTITY, "Checksum mismatch");
+            }
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not save file. Check receiving device for more information.",
@@ -499,6 +504,13 @@ async fn upload(
     StatusCode::OK.into_response()
 }
 
+/// A received body did not match the `sha256` its sender declared.
+/// Protocol 2.2 answers this with 422 so the sender can tell a corrupted
+/// transfer apart from a fault on the receiving side.
+#[derive(Debug, thiserror::Error)]
+#[error("sha256 mismatch")]
+pub(crate) struct ChecksumMismatch;
+
 /// Stream a body to a unique `.lsq-*.part` temp file in the dest dir,
 /// enforcing the declared size (and sha256 when provided) and an idle read
 /// timeout. Returns the temp path plus an armed cleanup guard; on any error
@@ -546,7 +558,7 @@ where
         use sha2::Digest;
         let actual: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if !actual.eq_ignore_ascii_case(expected) {
-            anyhow::bail!("sha256 mismatch");
+            return Err(ChecksumMismatch.into());
         }
     }
     // fsync the data before the caller makes the final name visible, so a crash

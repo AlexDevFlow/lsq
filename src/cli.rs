@@ -205,7 +205,7 @@ async fn cmd_list(alias: String, port: u16, wait: u64, json: bool, eph: bool) ->
         protocol: Protocol::Https,
         download: false,
     };
-    let peers = discovery::discover(&me, Duration::from_secs(wait)).await?;
+    let peers = discovery::discover(&me, Duration::from_secs(wait), Some(&identity)).await?;
     if json {
         let out: Vec<_> = peers
             .iter()
@@ -341,11 +341,11 @@ async fn cmd_send(
         if t.parse::<std::net::IpAddr>().is_ok() || t.parse::<SocketAddr>().is_ok() {
             resolve_target(&[], Some(t))?
         } else {
-            let peers = discovery::discover(&me, Duration::from_secs(wait)).await?;
+            let peers = discovery::discover(&me, Duration::from_secs(wait), Some(&identity)).await?;
             resolve_target(&peers, Some(t))?
         }
     } else {
-        let peers = discovery::discover(&me, Duration::from_secs(wait)).await?;
+        let peers = discovery::discover(&me, Duration::from_secs(wait), Some(&identity)).await?;
         resolve_target(&peers, None)?
     };
 
@@ -461,7 +461,7 @@ async fn cmd_receive(
     // one peer can't permanently block the receiver.
     tokio::spawn(receiver::reap_stale_sessions(state.clone()));
 
-    announce_presence(&me, peers).await?;
+    announce_presence(&me, peers, Some(&identity)).await?;
 
     if !quiet {
         eprintln!(
@@ -508,9 +508,14 @@ async fn serve_until_interrupted(
 
 /// Multicast presence for a long-running server (receive/share): initial
 /// announcement burst, reply loop, and periodic re-announce.
-async fn announce_presence(me: &SelfDevice, peers: discovery::PeerMap) -> Result<()> {
+async fn announce_presence(
+    me: &SelfDevice,
+    peers: discovery::PeerMap,
+    identity: Option<&crate::certs::Identity>,
+) -> Result<()> {
     let udp = Arc::new(discovery::bind_multicast_socket(MULTICAST_PORT)?);
-    let http_client = crate::sender::insecure_client()?;
+    // Presents our certificate: see the note in `discovery::discover`.
+    let http_client = crate::sender::client_with_identity(identity)?;
     tokio::spawn(discovery::listen_loop(
         udp.clone(),
         me.clone(),
@@ -579,7 +584,7 @@ async fn cmd_share(
         axum_server::bind(addr).serve(app).await.map_err(anyhow::Error::from)
     });
 
-    announce_presence(&me, peers).await?;
+    announce_presence(&me, peers, Some(&identity)).await?;
 
     if !quiet {
         eprintln!("sharing {count} file(s), {total} bytes as \"{alias}\"");
@@ -610,12 +615,13 @@ async fn cmd_pull(
     tokio::fs::create_dir_all(&dest)
         .await
         .with_context(|| format!("cannot create dest dir {}", dest.display()))?;
+    let identity = identity(eph)?;
 
     // Full URL target: use it as-is.
     if let Some(t) = from.as_deref() {
         if t.starts_with("http://") || t.starts_with("https://") {
             let outcome =
-                crate::pull::pull_files(t, &dest, pin.as_deref(), max_size, quiet).await?;
+                crate::pull::pull_files(t, &dest, pin.as_deref(), max_size, quiet, Some(&identity)).await?;
             return report_pull(outcome, &dest, quiet);
         }
     }
@@ -627,14 +633,14 @@ async fn cmd_pull(
             let peer = resolve_target(&[], Some(t))?;
             let host = format!("{}:{}", peer.addr, peer.info.port_or(DEFAULT_PORT));
             let outcome = match crate::pull::pull_files(
-                &format!("https://{host}"), &dest, pin.as_deref(), max_size, quiet,
+                &format!("https://{host}"), &dest, pin.as_deref(), max_size, quiet, Some(&identity),
             )
             .await
             {
                 Ok(o) => o,
                 Err(e) if e.unreachable => {
                     crate::pull::pull_files(
-                        &format!("http://{host}"), &dest, pin.as_deref(), max_size, quiet,
+                        &format!("http://{host}"), &dest, pin.as_deref(), max_size, quiet, Some(&identity),
                     )
                     .await
                     .map_err(|e2| anyhow::anyhow!("{e}; also failed over http: {e2}"))?
@@ -647,7 +653,6 @@ async fn cmd_pull(
 
     // Alias/fingerprint target (or no target): discover, keep peers that
     // announce the download flag.
-    let identity = identity(eph)?;
     let me = SelfDevice {
         alias,
         fingerprint: identity.fingerprint.clone(),
@@ -655,7 +660,7 @@ async fn cmd_pull(
         protocol: Protocol::Https,
         download: false,
     };
-    let peers = discovery::discover(&me, Duration::from_secs(wait)).await?;
+    let peers = discovery::discover(&me, Duration::from_secs(wait), Some(&identity)).await?;
     let peer = if from.is_some() {
         let p = resolve_target(&peers, from.as_deref())?;
         if !p.info.download {
@@ -674,7 +679,7 @@ async fn cmd_pull(
     }
     let base = crate::sender::base_url(&peer);
     let outcome =
-        crate::pull::pull_files(&base, &dest, pin.as_deref(), max_size, quiet).await?;
+        crate::pull::pull_files(&base, &dest, pin.as_deref(), max_size, quiet, Some(&identity)).await?;
     report_pull(outcome, &dest, quiet)
 }
 

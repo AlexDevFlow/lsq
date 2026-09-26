@@ -1,11 +1,11 @@
-//! LocalSend protocol v2.1 wire models.
-//! Field shapes follow the LocalSend v2.1 protocol; unknown fields are ignored
+//! LocalSend protocol v2.2 wire models.
+//! Field shapes follow the LocalSend v2.2 protocol; unknown fields are ignored
 //! and unknown enum values fall back gracefully (spec §7.1).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const PROTOCOL_VERSION: &str = "2.1";
+pub const PROTOCOL_VERSION: &str = "2.2";
 pub const DEFAULT_PORT: u16 = 53317;
 pub const MULTICAST_ADDR: &str = "224.0.0.167";
 /// Discovery always happens on this fixed group port, even when the HTTP
