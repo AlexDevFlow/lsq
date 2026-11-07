@@ -75,6 +75,10 @@ pub struct Session {
     pub sender_alias: String,
     pub files: HashMap<String, FileSlot>, // fileId -> slot
     pub last_activity: Instant,
+    /// Number of uploads currently streaming data. The reaper must not free
+    /// the slot while a transfer is in flight, even if it takes minutes
+    /// (large files over Wi-Fi easily exceed SESSION_IDLE_TIMEOUT).
+    pub in_flight: usize,
 }
 
 /// The single session slot. `Reserved` marks the brief window while an accept
@@ -167,7 +171,7 @@ pub async fn reap_stale_sessions(state: Shared) {
         tokio::time::sleep(REAPER_INTERVAL).await;
         let mut slot = state.session.lock().await;
         if let Slot::Active(s) = &*slot {
-            if s.last_activity.elapsed() > SESSION_IDLE_TIMEOUT {
+            if s.in_flight == 0 && s.last_activity.elapsed() > SESSION_IDLE_TIMEOUT {
                 let _ = state.events.send(format!(
                     "session from {} timed out after {}s idle; freeing slot",
                     s.sender_alias,
@@ -371,6 +375,7 @@ async fn prepare_upload(
             sender_alias: req.info.alias.clone(),
             files,
             last_activity: Instant::now(),
+            in_flight: 0,
         });
     }
 
@@ -441,6 +446,7 @@ async fn upload(
             return err(StatusCode::FORBIDDEN, "Invalid token");
         }
         session.last_activity = Instant::now();
+        session.in_flight += 1;
         (fslot.dto.clone(), state.cfg.dest.clone())
     };
 
@@ -450,6 +456,10 @@ async fn upload(
     let (part_path, part_guard) = match stream_to_part(&dto, &dest_dir, body.into_data_stream()).await {
         Ok(pair) => pair,
         Err(e) => {
+            if let Slot::Active(session) = &mut *state.session.lock().await {
+                session.in_flight = session.in_flight.saturating_sub(1);
+                session.last_activity = Instant::now();
+            }
             let _ = state.events.send(format!("upload failed: {e}"));
             // Protocol 2.2: a checksum mismatch is the sender's problem to
             // retry, not a receiver fault, and has its own status code.
@@ -470,6 +480,7 @@ async fn upload(
     let Slot::Active(session) = &mut *slot else {
         return err(StatusCode::CONFLICT, "No session"); // guard cleans the temp file
     };
+    session.in_flight = session.in_flight.saturating_sub(1);
     let valid = session.id == session_id
         && session
             .files
